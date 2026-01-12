@@ -137,17 +137,35 @@ application.add_handler(conv_handler)
 # Ключевой момент: webhook без asyncio.run (используем run_in_executor)
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_data = request.get_json(silent=True)
-        if json_data:
-            update = Update.de_json(json_data, application.bot)
-            if update:
-                # Запускаем async-процесс в отдельном потоке/executor
-                import asyncio
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(application.process_update(update))
-        return 'OK', 200
-    abort(403)
+    logger.info("Получен запрос от Telegram на путь: " + request.path)
+
+    if request.headers.get('content-type') != 'application/json':
+        logger.warning("Неверный Content-Type")
+        return abort(403)
+
+    json_data = request.get_json(silent=True)
+    if not json_data:
+        logger.error("JSON от Telegram пустой или некорректный")
+        return 'Invalid JSON', 400
+
+    update = Update.de_json(json_data, application.bot)
+    if not update:
+        logger.error("Не удалось создать Update")
+        return 'Invalid Update', 400
+
+    try:
+        import asyncio
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            asyncio.get_event_loop()
+        )
+        future.result(timeout=10)  # ждём 10 сек
+        logger.info("Обновление обработано успешно")
+    except Exception as e:
+        logger.error(f"Ошибка обработки: {str(e)}", exc_info=True)
+        return 'Processing error', 500
+
+    return 'OK', 200
 
 @app.route('/')
 def index():
