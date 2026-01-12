@@ -9,31 +9,32 @@ from telegram.ext import (
     filters,
     ConversationHandler,
     ContextTypes,
-    Dispatcher
 )
 
-# Настройки (секреты берём из переменных окружения)
+# Секреты из переменных окружения Render
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")  # по умолчанию /webhook, но позже изменим
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/secretwebhook")  # меняй на свой секретный путь
 
-if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан в переменных окружения!")
-if not ADMIN_CHAT_ID:
-    raise ValueError("ADMIN_CHAT_ID не задан в переменных окружения!")
+if not TOKEN or not ADMIN_CHAT_ID:
+    raise ValueError("Не заданы TELEGRAM_BOT_TOKEN или ADMIN_CHAT_ID в переменных окружения!")
 
 app = Flask(__name__)
 
 # Логирование
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Состояния
+# Состояния разговора
 FIO, BIRTHDATE, INN, METHOD, EMAIL, CHEKS = range(6)
 
+# Создаём приложение
 application = Application.builder().token(TOKEN).build()
 
-# Функции обработчики (все как раньше, без изменений)
+# Обработчики
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('Привет! Давай оформим справку.\nВведи свое ФИО:')
     return FIO
@@ -76,6 +77,7 @@ async def email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def cheks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     photo_path = None
+
     if update.message.photo:
         photo = update.message.photo[-1]
         file = await photo.get_file()
@@ -89,14 +91,14 @@ async def cheks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return CHEKS
 
     summary = (
-        "🆕 НОВАЯ ЗАЯВКА!\n\n"
+        f"🆕 НОВАЯ ЗАЯВКА!\n\n"
         f"ФИО: {context.user_data.get('fio', '—')}\n"
         f"Дата рождения: {context.user_data.get('birthdate', '—')}\n"
         f"ИНН: {context.user_data.get('inn', '—')}\n"
         f"Способ: {context.user_data.get('method', '—')}\n"
         f"Email: {context.user_data.get('email', 'Не указан')}\n"
-        f"Чеки: {context.user_data.get('cheks', '—')}\n"
-        f"\nОт: {update.effective_user.full_name} (@{update.effective_user.username or 'нет'})\n"
+        f"Чеки: {context.user_data.get('cheks', '—')}\n\n"
+        f"От: {update.effective_user.full_name} (@{update.effective_user.username or 'нет'})\n"
         f"ID: {update.effective_user.id}\n"
         f"Время: {update.message.date}"
     )
@@ -119,27 +121,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # Настройка обработчиков
-def setup_handlers():
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
-            BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
-            INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
-            METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, method)],
-            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
-            CHEKS: [MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), cheks)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        allow_reentry=True,
-    )
-    application.add_handler(conv_handler)
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
+    states={
+        FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
+        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+        METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, method)],
+        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+        CHEKS: [MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), cheks)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+    allow_reentry=True,
+)
 
-setup_handlers()
+application.add_handler(conv_handler)
 
-# Webhook (синхронный, работает на Render)
-dispatcher = application.dispatcher
-
+# Webhook-обработчик (синхронный)
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -147,13 +145,15 @@ def webhook():
         if json_data:
             update = Update.de_json(json_data, application.bot)
             if update:
-                dispatcher.process_update(update)
+                # Запускаем асинхронную обработку в синхронном контексте
+                import asyncio
+                asyncio.run(application.process_update(update))
         return 'OK', 200
     abort(403)
 
 @app.route('/')
 def index():
-    return 'Бот работает!'
+    return 'Бот работает! Напиши ему в Telegram.'
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
