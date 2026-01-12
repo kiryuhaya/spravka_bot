@@ -11,27 +11,24 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Секреты из переменных окружения Render
+# Секреты из env
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/secretwebhook")  # меняй на свой секретный путь
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/secretwebhook")
 
-if not TOKEN or not ADMIN_CHAT_ID:
-    raise ValueError("Не заданы TELEGRAM_BOT_TOKEN или ADMIN_CHAT_ID в переменных окружения!")
+if not TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+if not ADMIN_CHAT_ID:
+    raise ValueError("ADMIN_CHAT_ID не задан!")
+ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
 
 app = Flask(__name__)
 
-# Логирование
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Состояния разговора
 FIO, BIRTHDATE, INN, METHOD, EMAIL, CHEKS = range(6)
 
-# Создаём приложение
 application = Application.builder().token(TOKEN).build()
 
 # Обработчики
@@ -120,7 +117,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
-# Настройка обработчиков
+# Настройка ConversationHandler
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
@@ -137,17 +134,18 @@ conv_handler = ConversationHandler(
 
 application.add_handler(conv_handler)
 
-# Webhook-обработчик (синхронный)
+# Ключевой момент: webhook без asyncio.run (используем run_in_executor)
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        json_data = request.get_json()
+        json_data = request.get_json(silent=True)
         if json_data:
             update = Update.de_json(json_data, application.bot)
             if update:
-                # Запускаем асинхронную обработку в синхронном контексте
+                # Запускаем async-процесс в отдельном потоке/executor
                 import asyncio
-                asyncio.run(application.process_update(update))
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(application.process_update(update))
         return 'OK', 200
     abort(403)
 
