@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime
+import asyncio
 from flask import Flask, request, abort
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -12,29 +13,24 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Секреты из переменных окружения
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/secretwebhook")
-
-# Проверяем, что всё подтянулось
-logger = logging.getLogger(__name__)
+# Логирование
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-logger.info("=== ПРИЛОЖЕНИЕ ЗАПУСКАЕТСЯ НА RENDER ===")
-logger.info(f"Время запуска: {datetime.now().isoformat()}")
-logger.info(f"TELEGRAM_BOT_TOKEN подтянут: {'да' if TOKEN else 'НЕТ!!!'}")
-logger.info(f"ADMIN_CHAT_ID подтянут: {ADMIN_CHAT_ID}")
-logger.info(f"WEBHOOK_PATH подтянут: {WEBHOOK_PATH}")
+# Секреты
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/asfasfasfasfalkfhddjghbwierjgbewrkjigbewgjb")
+
+logger.info("=== ЗАПУСК ПРИЛОЖЕНИЯ ===")
+logger.info(f"WEBHOOK_PATH: {WEBHOOK_PATH}")
+logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
 
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN НЕ НАЙДЕН В ПЕРЕМЕННЫХ ОКРУЖЕНИЯ!")
-if not ADMIN_CHAT_ID:
-    raise ValueError("ADMIN_CHAT_ID НЕ НАЙДЕН В ПЕРЕМЕННЫХ ОКРУЖЕНИЯ!")
-ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 app = Flask(__name__)
 
@@ -42,6 +38,32 @@ FIO, BIRTHDATE, INN, METHOD, EMAIL, CHEKS = range(6)
 
 application = Application.builder().token(TOKEN).build()
 
+# Добавляем handlers (как раньше)
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('start', start)],
+    states={
+        FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
+        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+        METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, method)],
+        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+        CHEKS: [MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), cheks)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+    allow_reentry=True,
+)
+
+application.add_handler(conv_handler)
+
+# Инициализация приложения ОДИН РАЗ при запуске
+async def init_app():
+    await application.initialize()
+    logger.info("Application успешно инициализирован!")
+
+# Запускаем инициализацию при старте (в синхронном контексте)
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(init_app())
 # Обработчики с логами
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
@@ -158,60 +180,46 @@ conv_handler = ConversationHandler(
 
 application.add_handler(conv_handler)
 
-# Самый важный блок — webhook с максимальными логами
+# Webhook
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
-    logger.info("=== НОВЫЙ WEBHOOK ЗАПРОС ОТ TELEGRAM ===")
+    logger.info("=== ПОЛУЧЕН WEBHOOK ОТ TELEGRAM ===")
     logger.info(f"Время: {datetime.now().isoformat()}")
-    logger.info(f"Путь запроса: {request.path}")
-    logger.info(f"Метод: {request.method}")
     logger.info(f"Headers: {dict(request.headers)}")
 
     if request.headers.get('content-type') != 'application/json':
-        logger.warning("Неверный Content-Type от Telegram!")
-        return 'Bad Content-Type', 400
+        logger.warning("Неверный Content-Type")
+        abort(403)
 
-    logger.info("Чтение JSON от Telegram...")
-    try:
-        json_data = request.get_json(force=True, silent=False)
-        logger.info("JSON успешно прочитан")
-        logger.info(f"Длина JSON: {len(str(json_data))}")
-        logger.info(f"Ключи в JSON: {list(json_data.keys())}")
-    except Exception as e:
-        logger.error(f"Ошибка парсинга JSON: {str(e)}")
-        logger.error(f"Сырые данные: {request.data[:500]}...")
+    json_data = request.get_json(silent=True)
+    if not json_data:
+        logger.error("JSON пустой или некорректный")
         return 'Invalid JSON', 400
 
-    if not json_data:
-        logger.error("JSON пустой")
-        return 'Empty JSON', 400
+    update = Update.de_json(json_data, application.bot)
+    if not update:
+        logger.error("Не удалось создать Update")
+        return 'Invalid Update', 400
 
-    logger.info("Создание объекта Update...")
+    logger.info(f"Update создан. ID: {update.update_id}")
+
     try:
-        update = Update.de_json(json_data, application.bot)
-        logger.info(f"Update создан. Тип: {type(update)}, Update ID: {getattr(update, 'update_id', 'нет')}")
+        # Безопасный вызов async метода из sync контекста
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            asyncio.get_event_loop()
+        )
+        future.result(timeout=15)  # ждём максимум 15 секунд
+        logger.info("Обновление обработано")
     except Exception as e:
-        logger.error(f"Ошибка создания Update: {str(e)}")
-        return 'Update error', 400
+        logger.error(f"Ошибка обработки: {str(e)}", exc_info=True)
+        return 'Error', 500
 
-    logger.info("Запуск process_update...")
-    try:
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.process_update(update))
-        logger.info("process_update выполнен успешно")
-    except Exception as e:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА В PROCESS_UPDATE: {str(e)}", exc_info=True)
-        return 'Processing failed', 500
-
-    logger.info("Всё ОК, возвращаем 200")
     return 'OK', 200
 
 @app.route('/')
 def index():
-    logger.info("Кто-то зашёл на главную страницу")
-    return 'Бот работает! Напиши ему в Telegram.'
+    return 'Бот работает!'
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
