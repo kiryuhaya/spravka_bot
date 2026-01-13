@@ -378,29 +378,44 @@ def index():
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
-    """Обработчик webhook"""
+    logger.info("Получен webhook запрос")
+    
     try:
-        logger.info("Получен webhook запрос")
         json_data = request.get_json(force=True)
-        logger.info(f"Webhook данные: {json_data}")
+        if not json_data:
+            logger.error("JSON пустой или некорректный")
+            return 'Invalid JSON', 400
         
         update = Update.de_json(json_data, application.bot)
+        if not update:
+            logger.error("Не удалось создать Update")
+            return 'Invalid Update', 400
         
-        # Создаем новый event loop для обработки
+        logger.info("Обработка обновления...")
+        
+        # Создаём свежий event loop для каждого запроса
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         try:
+            # Запускаем обработку
             loop.run_until_complete(application.process_update(update))
             logger.info("Update обработан успешно")
+        except Exception as e:
+            logger.error(f"Ошибка при process_update: {str(e)}", exc_info=True)
+            # Можно добавить отправку ошибки админу, если нужно
         finally:
+            # Правильно закрываем loop
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
+            logger.info("Event loop закрыт корректно")
         
         return 'OK', 200
+    
     except Exception as e:
-        logger.error(f"ОШИБКА в webhook: {e}", exc_info=True)
-        return 'ERROR', 500
-
+        logger.error(f"Глобальная ошибка в webhook: {str(e)}", exc_info=True)
+        return 'Internal Server Error', 500
 
 async def setup_webhook():
     """Установка webhook"""
@@ -423,6 +438,10 @@ def run_setup():
     loop.run_until_complete(setup_webhook())
     loop.close()
 
+async def shutdown():
+    await application.shutdown()
+    await application.stop()
+    logger.info("Application gracefully stopped")
 
 if __name__ == '__main__':
     logger.info("=" * 50)
