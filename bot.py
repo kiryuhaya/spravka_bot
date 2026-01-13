@@ -1,8 +1,6 @@
 import os
 import logging
-import asyncio
 from datetime import datetime
-from threading import Thread
 from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -13,6 +11,8 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
 )
+import asyncio
+from threading import Thread
 
 # Настройка логирования
 logging.basicConfig(
@@ -21,120 +21,118 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Получаем переменные окружения
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+# Получение переменных окружения
+TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-PORT = int(os.getenv('PORT', 8443))
+WEBHOOK_PATH = os.getenv('WEBHOOK_PATH')
+RENDER_EXTERNAL_URL = os.getenv('RENDER_EXTERNAL_URL')
+
+logger.info(f"Переменные окружения загружены:")
+logger.info(f"TOKEN: {'установлен' if TOKEN else 'НЕ УСТАНОВЛЕН'}")
+logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+logger.info(f"WEBHOOK_PATH: {WEBHOOK_PATH}")
+logger.info(f"RENDER_EXTERNAL_URL: {RENDER_EXTERNAL_URL}")
 
 # Проверка обязательных переменных
-if not TELEGRAM_TOKEN:
-    logger.error("TELEGRAM_TOKEN не установлен")
-    raise ValueError("TELEGRAM_TOKEN обязателен")
-if not ADMIN_CHAT_ID:
-    logger.error("ADMIN_CHAT_ID не установлен")
-    raise ValueError("ADMIN_CHAT_ID обязателен")
-if not WEBHOOK_URL:
-    logger.error("WEBHOOK_URL не установлен")
-    raise ValueError("WEBHOOK_URL обязателен")
-
-logger.info(f"Бот запускается с WEBHOOK_URL: {WEBHOOK_URL}")
-logger.info(f"ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+if not TOKEN or not ADMIN_CHAT_ID or not WEBHOOK_PATH:
+    logger.error("КРИТИЧЕСКАЯ ОШИБКА: Не установлены обязательные переменные окружения!")
+    raise ValueError("Отсутствуют обязательные переменные окружения")
 
 # Состояния диалога
-(FIO, BIRTHDATE, INN, DELIVERY_METHOD, EMAIL, RECEIPTS) = range(6)
+(
+    FULLNAME,
+    BIRTHDATE,
+    INN,
+    DELIVERY_METHOD,
+    EMAIL,
+    RECEIPTS,
+) = range(6)
+
+# Хранилище данных пользователей (в продакшене использовать БД)
+user_data_storage = {}
 
 # Flask приложение
 app = Flask(__name__)
 
 # Telegram Application
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-# Хранилище данных пользователей
-user_data_storage = {}
+application = Application.builder().token(TOKEN).build()
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало диалога - запрос ФИО"""
-    user = update.effective_user
-    logger.info(f"Пользователь {user.id} ({user.username}) начал диалог")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало диалога"""
+    logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) начал диалог")
     
-    # Инициализируем хранилище для пользователя
-    user_data_storage[user.id] = {
-        'user_id': user.id,
-        'username': user.username,
-        'start_time': datetime.now().isoformat()
+    user_id = update.effective_user.id
+    user_data_storage[user_id] = {
+        'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'username': update.effective_user.username or 'Не указан'
     }
     
     await update.message.reply_text(
         "Добро пожаловать! Я помогу вам оформить справку.\n\n"
-        "Пожалуйста, укажите ваше ФИО (Фамилия Имя Отчество):",
-        reply_markup=ReplyKeyboardRemove()
+        "Пожалуйста, введите ваше ФИО (полностью):"
     )
-    return FIO
+    return FULLNAME
 
 
-async def get_fio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение ФИО и запрос даты рождения"""
+async def fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ФИО"""
     user_id = update.effective_user.id
-    fio = update.message.text.strip()
+    fullname_text = update.message.text.strip()
     
-    logger.info(f"Пользователь {user_id} ввёл ФИО: {fio}")
+    logger.info(f"Пользователь {user_id} ввел ФИО: {fullname_text}")
     
-    user_data_storage[user_id]['fio'] = fio
+    user_data_storage[user_id]['fullname'] = fullname_text
     
     await update.message.reply_text(
-        "Спасибо!\n\n"
-        "Теперь укажите вашу дату рождения в формате ДД.ММ.ГГГГ\n"
+        "Отлично! Теперь введите дату рождения в формате ДД.ММ.ГГГГ\n"
         "Например: 15.03.1990"
     )
     return BIRTHDATE
 
 
-async def get_birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение даты рождения и запрос ИНН"""
+async def birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка даты рождения"""
     user_id = update.effective_user.id
-    birthdate = update.message.text.strip()
+    birthdate_text = update.message.text.strip()
     
-    logger.info(f"Пользователь {user_id} ввёл дату рождения: {birthdate}")
+    logger.info(f"Пользователь {user_id} ввел дату рождения: {birthdate_text}")
     
     # Простая валидация формата
-    try:
-        datetime.strptime(birthdate, '%d.%m.%Y')
-        user_data_storage[user_id]['birthdate'] = birthdate
-    except ValueError:
-        logger.warning(f"Пользователь {user_id} ввёл неверный формат даты: {birthdate}")
+    if len(birthdate_text) != 10 or birthdate_text.count('.') != 2:
+        logger.warning(f"Неверный формат даты от пользователя {user_id}")
         await update.message.reply_text(
             "Неверный формат даты. Пожалуйста, используйте формат ДД.ММ.ГГГГ\n"
             "Например: 15.03.1990"
         )
         return BIRTHDATE
     
+    user_data_storage[user_id]['birthdate'] = birthdate_text
+    
     await update.message.reply_text(
-        "Отлично!\n\n"
-        "Теперь укажите ваш ИНН (12 цифр):"
+        "Хорошо! Теперь введите ваш ИНН (12 цифр):"
     )
     return INN
 
 
-async def get_inn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение ИНН и запрос способа получения"""
+async def inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ИНН"""
     user_id = update.effective_user.id
-    inn = update.message.text.strip()
+    inn_text = update.message.text.strip()
     
-    logger.info(f"Пользователь {user_id} ввёл ИНН: {inn}")
+    logger.info(f"Пользователь {user_id} ввел ИНН: {inn_text}")
     
-    # Валидация ИНН (12 цифр)
-    if not inn.isdigit() or len(inn) != 12:
-        logger.warning(f"Пользователь {user_id} ввёл неверный ИНН: {inn}")
+    # Валидация ИНН (должен быть 10 или 12 цифр)
+    if not inn_text.isdigit() or len(inn_text) not in [10, 12]:
+        logger.warning(f"Неверный формат ИНН от пользователя {user_id}")
         await update.message.reply_text(
-            "ИНН должен состоять из 12 цифр. Пожалуйста, попробуйте снова:"
+            "ИНН должен содержать 10 или 12 цифр. Попробуйте еще раз:"
         )
         return INN
     
-    user_data_storage[user_id]['inn'] = inn
+    user_data_storage[user_id]['inn'] = inn_text
     
-    # Клавиатура с выбором способа получения
+    # Кнопки для выбора способа получения
     keyboard = [
         ["Оригинал на бумаге"],
         ["На email"]
@@ -142,186 +140,185 @@ async def get_inn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     await update.message.reply_text(
-        "Прекрасно!\n\n"
-        "Выберите способ получения справки:",
+        "Отлично! Выберите способ получения справки:",
         reply_markup=reply_markup
     )
     return DELIVERY_METHOD
 
 
-async def get_delivery_method(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение способа доставки"""
+async def delivery_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка способа получения"""
     user_id = update.effective_user.id
     method = update.message.text.strip()
     
-    logger.info(f"Пользователь {user_id} выбрал способ получения: {method}")
+    logger.info(f"Пользователь {user_id} выбрал способ: {method}")
+    
+    if method not in ["Оригинал на бумаге", "На email"]:
+        await update.message.reply_text(
+            "Пожалуйста, выберите один из предложенных вариантов:",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Оригинал на бумаге"], ["На email"]],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return DELIVERY_METHOD
     
     user_data_storage[user_id]['delivery_method'] = method
     
     if method == "На email":
         await update.message.reply_text(
-            "Укажите ваш email адрес:",
+            "Пожалуйста, введите ваш email адрес:",
             reply_markup=ReplyKeyboardRemove()
         )
         return EMAIL
     else:
-        # Переходим к запросу чеков
-        return await ask_for_receipts(update, context)
+        # Переходим сразу к чекам
+        keyboard = [["Чеков нет"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            "Теперь отправьте фото чеков об оплате или нажмите кнопку \"Чеков нет\":",
+            reply_markup=reply_markup
+        )
+        user_data_storage[user_id]['email'] = 'Не требуется'
+        user_data_storage[user_id]['receipts'] = []
+        return RECEIPTS
 
 
-async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение email"""
+async def email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка email"""
     user_id = update.effective_user.id
-    email = update.message.text.strip()
+    email_text = update.message.text.strip()
     
-    logger.info(f"Пользователь {user_id} указал email: {email}")
+    logger.info(f"Пользователь {user_id} ввел email: {email_text}")
     
     # Простая валидация email
-    if '@' not in email or '.' not in email:
-        logger.warning(f"Пользователь {user_id} ввёл неверный email: {email}")
+    if '@' not in email_text or '.' not in email_text:
+        logger.warning(f"Неверный формат email от пользователя {user_id}")
         await update.message.reply_text(
-            "Неверный формат email. Пожалуйста, укажите корректный email адрес:"
+            "Неверный формат email. Пожалуйста, введите корректный адрес:"
         )
         return EMAIL
     
-    user_data_storage[user_id]['email'] = email
-    
-    return await ask_for_receipts(update, context)
-
-
-async def ask_for_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрос чеков об оплате"""
-    user_id = update.effective_user.id
-    logger.info(f"Запрашиваем чеки у пользователя {user_id}")
-    
-    # Инициализируем список чеков
+    user_data_storage[user_id]['email'] = email_text
     user_data_storage[user_id]['receipts'] = []
     
     keyboard = [["Чеков нет"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     await update.message.reply_text(
-        "Теперь отправьте фото чеков об оплате.\n"
-        "Вы можете отправить несколько фотографий одну за другой.\n"
-        "Когда закончите, нажмите кнопку 'Чеков нет' или отправьте текст 'готово'.",
+        "Отлично! Теперь отправьте фото чеков об оплате или нажмите кнопку \"Чеков нет\":",
         reply_markup=reply_markup
     )
     return RECEIPTS
 
 
-async def get_receipts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получение чеков (фото или текст 'готово'/'Чеков нет')"""
+async def receipts_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка фото чеков"""
     user_id = update.effective_user.id
     
-    # Если пользователь написал "Чеков нет" или "готово"
-    if update.message.text:
-        text = update.message.text.strip().lower()
-        logger.info(f"Пользователь {user_id} отправил текст: {text}")
-        
-        if text in ['чеков нет', 'готово']:
-            if text == 'чеков нет':
-                user_data_storage[user_id]['receipts_status'] = 'Чеков нет'
-            else:
-                user_data_storage[user_id]['receipts_status'] = f"Отправлено фото: {len(user_data_storage[user_id]['receipts'])}"
-            
-            return await finalize_application(update, context)
-        else:
-            await update.message.reply_text(
-                "Пожалуйста, отправьте фото чека или нажмите 'Чеков нет'."
-            )
-            return RECEIPTS
-    
-    # Если пользователь отправил фото
     if update.message.photo:
-        photo = update.message.photo[-1]  # Берём фото лучшего качества
-        logger.info(f"Пользователь {user_id} отправил фото чека: {photo.file_id}")
+        logger.info(f"Пользователь {user_id} отправил фото чека")
         
+        # Получаем фото в лучшем качестве
+        photo = update.message.photo[-1]
+        user_data_storage[user_id]['receipts'].append(photo.file_id)
+        
+        # Пересылаем фото админу немедленно
         try:
-            # Отправляем фото администратору сразу
             await context.bot.send_photo(
                 chat_id=ADMIN_CHAT_ID,
                 photo=photo.file_id,
-                caption=f"Чек от пользователя {user_id} (@{user_data_storage[user_id].get('username', 'нет username')})"
+                caption=f"📸 Чек от пользователя {user_id} (@{user_data_storage[user_id]['username']})"
             )
-            logger.info(f"Фото чека от пользователя {user_id} отправлено администратору")
-            
-            # Сохраняем file_id в данных пользователя
-            user_data_storage[user_id]['receipts'].append(photo.file_id)
-            
-            await update.message.reply_text(
-                "Чек получен! Можете отправить ещё фото или нажать 'Чеков нет' для завершения."
-            )
-            return RECEIPTS
-            
+            logger.info(f"Фото чека от пользователя {user_id} отправлено админу")
         except Exception as e:
-            logger.error(f"Ошибка при отправке фото администратору: {e}")
-            await update.message.reply_text(
-                "Произошла ошибка при обработке фото. Попробуйте снова."
+            logger.error(f"Ошибка при отправке фото админу: {e}")
+        
+        await update.message.reply_text(
+            "Фото получено! Можете отправить еще чеки или нажмите \"Чеков нет\" для завершения.",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Чеков нет"]],
+                one_time_keyboard=True,
+                resize_keyboard=True
             )
-            return RECEIPTS
-    
-    await update.message.reply_text(
-        "Пожалуйста, отправьте фото чека или нажмите 'Чеков нет'."
-    )
-    return RECEIPTS
+        )
+        return RECEIPTS
 
 
-async def finalize_application(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Завершение заявки и отправка данных администратору"""
+async def receipts_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текста в состоянии RECEIPTS"""
     user_id = update.effective_user.id
-    logger.info(f"Финализация заявки пользователя {user_id}")
+    text = update.message.text.strip()
     
+    if text == "Чеков нет":
+        logger.info(f"Пользователь {user_id} завершил отправку чеков")
+        return await finish_registration(update, context)
+    else:
+        await update.message.reply_text(
+            "Пожалуйста, отправьте фото чеков или нажмите \"Чеков нет\":",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Чеков нет"]],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return RECEIPTS
+
+
+async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершение регистрации и отправка данных админу"""
+    user_id = update.effective_user.id
     data = user_data_storage.get(user_id, {})
     
-    # Формируем сообщение для администратора
-    admin_message = (
-        "НОВАЯ ЗАЯВКА НА СПРАВКУ\n\n"
-        f"ФИО: {data.get('fio', 'не указано')}\n"
-        f"Дата рождения: {data.get('birthdate', 'не указано')}\n"
-        f"ИНН: {data.get('inn', 'не указано')}\n"
-        f"Способ получения: {data.get('delivery_method', 'не указано')}\n"
-    )
+    logger.info(f"Завершение регистрации пользователя {user_id}")
     
-    if 'email' in data:
-        admin_message += f"📧 Email: {data['email']}\n"
+    # Формируем сообщение для админа
+    admin_message = f"""
+<b>НОВАЯ ЗАЯВКА НА СПРАВКУ</b>
+
+<b>Информация о пользователе:</b>
+• ID: <code>{user_id}</code>
+• Username: @{data.get('username', 'Не указан')}
+• Время заявки: {data.get('start_time', 'Не указано')}
+
+<b>Данные заявки:</b>
+• ФИО: {data.get('fullname', 'Не указано')}
+• Дата рождения: {data.get('birthdate', 'Не указано')}
+• ИНН: {data.get('inn', 'Не указано')}
+• Способ получения: {data.get('delivery_method', 'Не указано')}
+• Email: {data.get('email', 'Не указано')}
+• Количество чеков: {len(data.get('receipts', []))}
+"""
     
-    admin_message += (
-        f"Чеки: {data.get('receipts_status', 'Отправлено фото: ' + str(len(data.get('receipts', []))))}\n\n"
-        f"User ID: {data.get('user_id', 'неизвестно')}\n"
-        f"Username: @{data.get('username', 'нет username')}\n"
-        f"Время подачи: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-    )
-    
+    # Отправляем данные админу
     try:
-        # Отправляем сводку администратору
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=admin_message
+            text=admin_message,
+            parse_mode='HTML'
         )
-        logger.info(f"Данные заявки от пользователя {user_id} отправлены администратору")
-        
-        # Благодарим пользователя
-        await update.message.reply_text(
-            "Спасибо! Справка будет оформлена в течение 30 дней.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-        # Очищаем данные пользователя
-        if user_id in user_data_storage:
-            del user_data_storage[user_id]
-        
-        logger.info(f"Заявка пользователя {user_id} успешно обработана")
-        
+        logger.info(f"Данные пользователя {user_id} отправлены админу")
     except Exception as e:
-        logger.error(f"Ошибка при отправке данных администратору: {e}")
-        await update.message.reply_text(
-            "Произошла ошибка при отправке заявки. Пожалуйста, попробуйте позже или свяжитесь с администратором."
-        )
+        logger.error(f"Ошибка при отправке данных админу: {e}")
+    
+    # Отправляем подтверждение пользователю
+    await update.message.reply_text(
+        "Спасибо! Справка будет оформлена в течение 30 дней.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    
+    # Очищаем данные пользователя
+    if user_id in user_data_storage:
+        del user_data_storage[user_id]
+    
+    logger.info(f"Регистрация пользователя {user_id} успешно завершена")
     
     return ConversationHandler.END
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена диалога"""
     user_id = update.effective_user.id
     logger.info(f"Пользователь {user_id} отменил диалог")
@@ -330,22 +327,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         del user_data_storage[user_id]
     
     await update.message.reply_text(
-        "Оформление справки отменено. Если хотите начать заново, отправьте /start",
+        "Операция отменена. Для начала введите /start",
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
 
 
-# Настройка ConversationHandler
+# Обработчик диалога
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
-        FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_fio)],
-        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_birthdate)],
-        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_inn)],
-        DELIVERY_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_delivery_method)],
-        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
-        RECEIPTS: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, get_receipts)],
+        FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fullname)],
+        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+        DELIVERY_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery_method)],
+        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+        RECEIPTS: [
+            MessageHandler(filters.PHOTO, receipts_photo),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receipts_text),
+        ],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
 )
@@ -353,68 +353,72 @@ conv_handler = ConversationHandler(
 application.add_handler(conv_handler)
 
 
-# Функция для запуска async кода из sync контекста
-def run_async(coro):
-    """Запускает корутину в отдельном потоке"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
 @app.route('/')
 def index():
-    """Главная страница для проверки работы сервера"""
-    logger.info("Запрос к корневому URL")
+    """Главная страница"""
+    logger.info("Главная страница запрошена")
     return "Telegram Bot is running!"
 
 
-@app.route('/webhook', methods=['POST'])
+@app.route(WEBHOOK_PATH, methods=['POST'])
 def webhook():
-    """Обработчик webhook от Telegram"""
+    """Обработчик webhook"""
     try:
         logger.info("Получен webhook запрос")
-        
-        # Получаем данные обновления
         json_data = request.get_json(force=True)
         logger.info(f"Webhook данные: {json_data}")
         
-        # Создаём Update объект
         update = Update.de_json(json_data, application.bot)
         
-        # Запускаем обработку в отдельном потоке
-        thread = Thread(target=run_async, args=(application.process_update(update),))
-        thread.start()
+        # Создаем новый event loop для обработки
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        logger.info("Webhook обработан успешно")
+        try:
+            loop.run_until_complete(application.process_update(update))
+            logger.info("Update обработан успешно")
+        finally:
+            loop.close()
+        
         return 'OK', 200
-        
     except Exception as e:
-        logger.error(f"Ошибка при обработке webhook: {e}", exc_info=True)
-        return 'Error', 500
+        logger.error(f"ОШИБКА в webhook: {e}", exc_info=True)
+        return 'ERROR', 500
 
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    """Установка webhook (для отладки)"""
+async def setup_webhook():
+    """Установка webhook"""
+    webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+    logger.info(f"Устанавливаем webhook: {webhook_url}")
+    
     try:
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        logger.info(f"Попытка установить webhook: {webhook_url}")
-        
-        result = run_async(application.bot.set_webhook(webhook_url))
-        logger.info(f"Webhook установлен: {result}")
-        
-        return f"Webhook установлен: {webhook_url}", 200
+        await application.bot.set_webhook(url=webhook_url)
+        webhook_info = await application.bot.get_webhook_info()
+        logger.info(f"Webhook установлен: {webhook_info.url}")
+        logger.info(f"Pending updates: {webhook_info.pending_update_count}")
     except Exception as e:
-        logger.error(f"Ошибка при установке webhook: {e}", exc_info=True)
-        return f"Ошибка: {str(e)}", 500
+        logger.error(f"Ошибка при установке webhook: {e}")
+
+
+def run_setup():
+    """Запуск setup в отдельном потоке"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_webhook())
+    loop.close()
 
 
 if __name__ == '__main__':
-    logger.info("Запуск Flask приложения")
-    logger.info(f"PORT: {PORT}")
+    logger.info("=" * 50)
+    logger.info("ЗАПУСК БОТА")
+    logger.info("=" * 50)
     
-    # Запускаем Flask приложение
-    app.run(host='0.0.0.0', port=PORT)
+    # Устанавливаем webhook в отдельном потоке
+    setup_thread = Thread(target=run_setup)
+    setup_thread.start()
+    setup_thread.join()
+    
+    # Запускаем Flask
+    port = int(os.getenv('PORT', 10000))
+    logger.info(f"Запуск Flask на порту {port}")
+    app.run(host='0.0.0.0', port=port)
