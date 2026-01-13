@@ -341,17 +341,29 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start)],
     states={
-        FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, fullname)],
-        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
-        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
-        DELIVERY_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery_method)],
-        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+        FULLNAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, fullname)
+        ],
+        BIRTHDATE: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)
+        ],
+        INN: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, inn)
+        ],
+        DELIVERY_METHOD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, delivery_method)
+        ],
+        EMAIL: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, email)
+        ],
         RECEIPTS: [
             MessageHandler(filters.PHOTO, receipts_photo),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receipts_text),
+            MessageHandler(filters.Regex("^(Чеков нет)$"), receipts_text),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receipts_text)  # на случай других текстов
         ],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
+    allow_reentry=True,
 )
 
 application.add_handler(conv_handler)
