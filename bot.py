@@ -62,9 +62,6 @@ logger.info("Инициализация Telegram Application...")
 asyncio.run(application.initialize())
 logger.info("Application успешно инициализировано!")
 
-# Теперь безопасно добавляем обработчики
-application.add_handler(conv_handler)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало диалога"""
     logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) начал диалог")
