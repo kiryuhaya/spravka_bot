@@ -1,13 +1,10 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from flask import Flask, request
 
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-)
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -24,7 +21,7 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")
 
 if not all([BOT_TOKEN, ADMIN_CHAT_ID, RENDER_EXTERNAL_URL, WEBHOOK_PATH]):
-    raise RuntimeError("❌ Не заданы все переменные окружения")
+    raise RuntimeError("❌ Не заданы переменные окружения")
 
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
@@ -33,17 +30,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot")
 
 # ================== STATES ==================
-(
-    FIO,
-    BIRTHDATE,
-    INN,
-    DELIVERY,
-    EMAIL,
-    RECEIPTS,
-) = range(6)
+FIO, BIRTHDATE, INN, DELIVERY, EMAIL, RECEIPTS = range(6)
 
 # ================== FLASK ==================
 flask_app = Flask(__name__)
@@ -54,7 +44,7 @@ application = Application.builder().token(BOT_TOKEN).build()
 
 # ================== HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Start from user %s", update.effective_user.id)
+    logger.info("START from %s", update.effective_user.id)
     context.user_data.clear()
     await update.message.reply_text("Введите ФИО:")
     return FIO
@@ -67,14 +57,13 @@ async def fio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
     try:
-        datetime.strptime(text, "%d.%m.%Y")
-        context.user_data["birthdate"] = text
+        datetime.strptime(update.message.text, "%d.%m.%Y")
+        context.user_data["birthdate"] = update.message.text
         await update.message.reply_text("Введите ИНН:")
         return INN
     except ValueError:
-        await update.message.reply_text("❌ Неверный формат. Пример: 31.12.2000")
+        await update.message.reply_text("❌ Формат: 31.12.2000")
         return BIRTHDATE
 
 
@@ -86,17 +75,15 @@ async def inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         one_time_keyboard=True,
     )
     await update.message.reply_text(
-        "Выберите способ получения справки:",
+        "Выберите способ получения:",
         reply_markup=keyboard,
     )
     return DELIVERY
 
 
 async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text
-    context.user_data["delivery"] = choice
-
-    if choice == "На email":
+    context.user_data["delivery"] = update.message.text
+    if update.message.text == "На email":
         await update.message.reply_text(
             "Введите email:",
             reply_markup=ReplyKeyboardRemove(),
@@ -104,10 +91,7 @@ async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EMAIL
     else:
         context.user_data["email"] = "—"
-        await update.message.reply_text(
-            "Пришлите фото чеков или напишите «Чеков нет»:",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+        await update.message.reply_text("Пришлите фото чеков или напишите «Чеков нет»:")
         return RECEIPTS
 
 
@@ -124,10 +108,10 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["user_id"] = user.id
     data["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    text_report = (
-        "📄 *Новая заявка на справку*\n\n"
+    text = (
+        "📄 *Новая заявка*\n\n"
         f"👤 ФИО: {data['fio']}\n"
-        f"🎂 Дата рождения: {data['birthdate']}\n"
+        f"🎂 ДР: {data['birthdate']}\n"
         f"🧾 ИНН: {data['inn']}\n"
         f"📦 Получение: {data['delivery']}\n"
         f"📧 Email: {data.get('email','—')}\n"
@@ -135,30 +119,27 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 Время: {data['time']}"
     )
 
-    try:
+    await application.bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=text,
+        parse_mode="Markdown",
+    )
+
+    if update.message.photo:
+        for photo in update.message.photo:
+            await application.bot.send_photo(
+                chat_id=ADMIN_CHAT_ID,
+                photo=photo.file_id,
+            )
         await application.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=text_report,
-            parse_mode="Markdown",
+            text="🧾 Чеки: фото получены",
         )
-
-        if update.message.photo:
-            for photo in update.message.photo:
-                await application.bot.send_photo(
-                    chat_id=ADMIN_CHAT_ID,
-                    photo=photo.file_id,
-                )
-            status = "Фото чеков получены"
-        else:
-            status = update.message.text
-
+    else:
         await application.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
-            text=f"🧾 Чеки: {status}",
+            text=f"🧾 Чеки: {update.message.text}",
         )
-
-    except Exception:
-        logger.exception("Ошибка отправки админу")
 
     await update.message.reply_text(
         "✅ Спасибо! Справка будет оформлена в течение 30 дней."
@@ -166,35 +147,28 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Отменено.")
-    return ConversationHandler.END
-
-
 # ================== CONVERSATION ==================
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
-        BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
-        INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
-        DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
-        EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
-        RECEIPTS: [
-            MessageHandler(filters.PHOTO | filters.TEXT, receipts)
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
+application.add_handler(
+    ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
+            BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+            INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+            DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
+            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+            RECEIPTS: [MessageHandler(filters.TEXT | filters.PHOTO, receipts)],
+        },
+        fallbacks=[],
+    )
 )
 
-application.add_handler(conv_handler)
-
-# ================== WEBHOOK ==================
-@flask_app.post(WEBHOOK_PATH)
-async def webhook():
+# ================== WEBHOOK (SYNC) ==================
+@flask_app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
+        asyncio.run(application.process_update(update))
     except Exception:
         logger.exception("Webhook error")
     return "OK"
@@ -206,12 +180,9 @@ def index():
 
 
 # ================== STARTUP ==================
-async def startup():
+async def set_webhook():
     await application.bot.set_webhook(WEBHOOK_URL)
-    logger.info("Webhook set: %s", WEBHOOK_URL)
+    logger.info("Webhook set to %s", WEBHOOK_URL)
 
 
-application.post_init = startup
-
-if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=10000)
+asyncio.run(set_webhook())
