@@ -62,6 +62,15 @@ logger.info("Инициализация Telegram Application...")
 asyncio.run(application.initialize())
 logger.info("Application успешно инициализировано!")
 
+# После asyncio.run(application.initialize())
+logger.info("Пингую Telegram API для проверки соединения...")
+try:
+    me = asyncio.run(application.bot.get_me())
+    logger.info(f"Бот успешно подключён: @{me.username}")
+except Exception as e:
+    logger.error(f"Ошибка проверки соединения: {e}")
+    
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало диалога"""
     logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) начал диалог")
@@ -382,24 +391,32 @@ def webhook():
             logger.error("Не удалось создать Update")
             return 'Invalid Update', 400
         
-        logger.info("Обработка обновления...")
+        logger.info("Начинаем process_update...")
+        logger.info(f"Тип обновления: {type(update)}, Update ID: {getattr(update, 'update_id', 'нет')}")
         
-        # Самый стабильный способ на Render: run_coroutine_threadsafe
+        # Увеличиваем таймаут до 90 секунд для cold start
         future = asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             asyncio.get_event_loop_policy().get_event_loop()
         )
-        future.result(timeout=30)  # ждём максимум 30 секунд
         
-        logger.info("Update обработан успешно")
+        try:
+            future.result(timeout=90)  # 90 секунд — должно хватить даже на cold start
+            logger.info("process_update завершён успешно")
+        except asyncio.TimeoutError:
+            logger.error("process_update превысил 90 секунд — вероятно cold start")
+            return 'Timeout (cold start)', 504
+        except Exception as e:
+            logger.error(f"Ошибка внутри process_update: {str(e)}", exc_info=True)
+            return 'Processing error', 500
+        
         return 'OK', 200
     
-    except asyncio.TimeoutError:
-        logger.error("Обработка обновления превысила таймаут 30 секунд")
-        return 'Timeout', 504
     except Exception as e:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА в webhook: {str(e)}", exc_info=True)
+        logger.error(f"Глобальная ошибка в webhook: {str(e)}", exc_info=True)
         return 'Internal Server Error', 500
+
+
 async def setup_webhook():
     """Установка webhook"""
     webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
