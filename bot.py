@@ -102,22 +102,13 @@ async def birthdate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Пользователь {user_id} ввел дату рождения: {birthdate_text}")
     
-    # Простая валидация формата
-    if len(birthdate_text) != 10 or birthdate_text.count('.') != 2:
-        logger.warning(f"Неверный формат даты от пользователя {user_id}")
-        await update.message.reply_text(
-            "Неверный формат даты. Пожалуйста, используйте формат ДД.ММ.ГГГГ\n"
-            "Например: 15.03.1990"
-        )
-        return BIRTHDATE
-    
+    # Без проверки формата — просто сохраняем
     user_data_storage[user_id]['birthdate'] = birthdate_text
     
     await update.message.reply_text(
         "Хорошо! Теперь введите ваш ИНН (12 цифр):"
     )
     return INN
-
 
 async def inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ИНН"""
@@ -393,30 +384,22 @@ def webhook():
         
         logger.info("Обработка обновления...")
         
-        # Создаём свежий event loop для каждого запроса
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Самый стабильный способ на Render: run_coroutine_threadsafe
+        future = asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            asyncio.get_event_loop_policy().get_event_loop()
+        )
+        future.result(timeout=30)  # ждём максимум 30 секунд
         
-        try:
-            # Запускаем обработку
-            loop.run_until_complete(application.process_update(update))
-            logger.info("Update обработан успешно")
-        except Exception as e:
-            logger.error(f"Ошибка при process_update: {str(e)}", exc_info=True)
-            # Можно добавить отправку ошибки админу, если нужно
-        finally:
-            # Правильно закрываем loop
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(loop.shutdown_default_executor())
-            loop.close()
-            logger.info("Event loop закрыт корректно")
-        
+        logger.info("Update обработан успешно")
         return 'OK', 200
     
+    except asyncio.TimeoutError:
+        logger.error("Обработка обновления превысила таймаут 30 секунд")
+        return 'Timeout', 504
     except Exception as e:
-        logger.error(f"Глобальная ошибка в webhook: {str(e)}", exc_info=True)
+        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА в webhook: {str(e)}", exc_info=True)
         return 'Internal Server Error', 500
-
 async def setup_webhook():
     """Установка webhook"""
     webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
