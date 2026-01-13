@@ -57,6 +57,13 @@ app = Flask(__name__)
 # Telegram Application
 application = Application.builder().token(TOKEN).build()
 
+# Обязательная инициализация (самое важное!)
+logger.info("Инициализация Telegram Application...")
+asyncio.run(application.initialize())
+logger.info("Application успешно инициализировано!")
+
+# Теперь безопасно добавляем обработчики
+application.add_handler(conv_handler)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало диалога"""
