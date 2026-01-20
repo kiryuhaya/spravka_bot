@@ -84,7 +84,7 @@ async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["email"] = "—"
     await update.message.reply_text(
-        "Пришлите фото чеков или напишите «Чеков нет»:",
+        "Пришлите фото чеков или напишите «Чеков нет» и год справки (например: Чеков нет 2023):",  # ИЗМЕНЕНО ЗДЕСЬ
         reply_markup=ReplyKeyboardRemove(),
     )
     return RECEIPTS
@@ -92,7 +92,9 @@ async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["email"] = update.message.text.strip()
-    await update.message.reply_text("Пришлите фото чеков или напишите «Чеков нет»:")
+    await update.message.reply_text(
+        "Пришлите фото чеков или напишите «Чеков нет» и год справки (например: Чеков нет 2023):"  # ИЗМЕНЕНО ЗДЕСЬ
+    )
     return RECEIPTS
 
 
