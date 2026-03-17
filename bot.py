@@ -1,6 +1,10 @@
 import os
 import logging
 from datetime import datetime
+from collections import defaultdict
+
+# Словарь для накопления фото
+pending_photos = defaultdict(list)
 
 from telegram import (
     Update,
@@ -71,6 +75,25 @@ async def inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return DELIVERY
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отдельный обработчик для всех приходящих фото"""
+    user_id = update.effective_user.id
+
+    if update.message.photo:
+        for photo in update.message.photo:
+            pending_photos[user_id].append(photo.file_id)
+            await context.bot.send_photo(ADMIN_CHAT_ID, photo.file_id)
+
+    # === Завершаем разговор после получения фото ===
+    await update.message.reply_text(
+        "✅ Фото получены! Справка будет оформлена в течение 30 дней."
+    )
+
+    # Чистим список фото
+    pending_photos.pop(user_id, None)
+
+    return ConversationHandler.END
+
 
 async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["delivery"] = update.message.text
@@ -102,6 +125,7 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = context.user_data
 
+    # Формируем текст заявки
     text = (
         "📄 *Новая заявка на справку*\n\n"
         f"👤 ФИО: {data['fio']}\n"
@@ -119,15 +143,22 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-    if update.message.photo:
-        for p in update.message.photo:
-            await context.bot.send_photo(ADMIN_CHAT_ID, p.file_id)
-        await context.bot.send_message(ADMIN_CHAT_ID, "🧾 Чеки: фото")
+    # === Работа с фото ===
+    photo_list = pending_photos[user.id]
+
+    if photo_list:
+        await context.bot.send_message(
+            ADMIN_CHAT_ID,
+            f"🧾 Получено {len(photo_list)} фото чека(ов)"
+        )
     else:
         await context.bot.send_message(
             ADMIN_CHAT_ID,
-            f"🧾 Чеки: {update.message.text}",
+            f"🧾 Чеки: {update.message.text}"
         )
+
+    # Чистим список фото для этого пользователя
+    pending_photos.pop(user.id, None)
 
     await update.message.reply_text(
         "✅ Спасибо! Справка будет оформлена в течение 30 дней."
@@ -147,13 +178,16 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
-            BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
-            INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
-            DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
-            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
-            RECEIPTS: [MessageHandler(filters.TEXT | filters.PHOTO, receipts)],
-        },
+                FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
+                BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+                INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+                DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
+                EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+                RECEIPTS: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, receipts),   
+                    MessageHandler(filters.PHOTO, handle_photo),                 
+                ],
+            },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
