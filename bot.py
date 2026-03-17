@@ -108,10 +108,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if update.message.photo:
-        photo = update.message.photo[-1]  # только лучшее качество
+        photo = update.message.photo[-1]
         pending_photos[user_id].append(photo.file_id)
 
-    await update.message.reply_text("Добавить ещё фото? (Да / Нет)")
+    keyboard = ReplyKeyboardMarkup(
+        [["Да", "Нет"]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+    await update.message.reply_text(
+        "Добавить ещё фото?",
+        reply_markup=keyboard
+    )
+
     return MORE_PHOTOS
 
 
@@ -120,7 +130,10 @@ async def more_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.message.text.lower()
 
     if answer in ["да", "yes", "y"]:
-        await update.message.reply_text("Пришлите ещё фото:")
+        await update.message.reply_text(
+            "Пришлите ещё фото:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return RECEIPTS
 
     # === отправляем заявку ===
@@ -144,7 +157,6 @@ async def more_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-    # === отправляем фото одним альбомом ===
     photo_list = pending_photos[user_id]
 
     if photo_list:
@@ -162,11 +174,11 @@ async def more_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_photos.pop(user_id, None)
 
     await update.message.reply_text(
-        "✅ Фото получены! Справка будет оформлена в течение 30 дней."
+        "✅ Фото получены! Справка будет оформлена в течение 30 дней.",
+        reply_markup=ReplyKeyboardRemove()
     )
 
     return ConversationHandler.END
-
 
 # ======== ТЕКСТ ========
 async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
