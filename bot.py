@@ -10,6 +10,7 @@ from telegram import (
     Update,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -35,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("bot")
 
 # ================== STATES ==================
-FIO, BIRTHDATE, INN, DELIVERY, EMAIL, RECEIPTS = range(6)
+FIO, BIRTHDATE, INN, DELIVERY, EMAIL, RECEIPTS, MORE_PHOTOS = range(7)
 
 # ================== HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,25 +76,6 @@ async def inn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return DELIVERY
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отдельный обработчик для всех приходящих фото"""
-    user_id = update.effective_user.id
-
-    if update.message.photo:
-        for photo in update.message.photo:
-            pending_photos[user_id].append(photo.file_id)
-            await context.bot.send_photo(ADMIN_CHAT_ID, photo.file_id)
-
-    # === Завершаем разговор после получения фото ===
-    await update.message.reply_text(
-        "✅ Фото получены! Справка будет оформлена в течение 30 дней."
-    )
-
-    # Чистим список фото
-    pending_photos.pop(user_id, None)
-
-    return ConversationHandler.END
-
 
 async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["delivery"] = update.message.text
@@ -107,7 +89,7 @@ async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["email"] = "—"
     await update.message.reply_text(
-        "Пришлите фото чеков или напишите «Чеков нет» и год справки (например: Чеков нет 2023):",  # ИЗМЕНЕНО ЗДЕСЬ
+        "Пришлите фото чеков или напишите «Чеков нет 2023»:",
         reply_markup=ReplyKeyboardRemove(),
     )
     return RECEIPTS
@@ -116,16 +98,35 @@ async def delivery(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["email"] = update.message.text.strip()
     await update.message.reply_text(
-        "Пришлите фото чеков или напишите «Чеков нет» и год справки (например: Чеков нет 2023):"  # ИЗМЕНЕНО ЗДЕСЬ
+        "Пришлите фото чеков или напишите «Чеков нет 2023»:"
     )
     return RECEIPTS
 
 
-async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ======== ФОТО ========
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if update.message.photo:
+        photo = update.message.photo[-1]  # только лучшее качество
+        pending_photos[user_id].append(photo.file_id)
+
+    await update.message.reply_text("Добавить ещё фото? (Да / Нет)")
+    return MORE_PHOTOS
+
+
+async def more_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    answer = update.message.text.lower()
+
+    if answer in ["да", "yes", "y"]:
+        await update.message.reply_text("Пришлите ещё фото:")
+        return RECEIPTS
+
+    # === отправляем заявку ===
     user = update.effective_user
     data = context.user_data
 
-    # Формируем текст заявки
     text = (
         "📄 *Новая заявка на справку*\n\n"
         f"👤 ФИО: {data['fio']}\n"
@@ -143,27 +144,63 @@ async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-    # === Работа с фото ===
-    photo_list = pending_photos[user.id]
+    # === отправляем фото одним альбомом ===
+    photo_list = pending_photos[user_id]
 
     if photo_list:
-        await context.bot.send_message(
-            ADMIN_CHAT_ID,
-            f"🧾 Получено {len(photo_list)} фото чека(ов)"
+        media = [InputMediaPhoto(fid) for fid in photo_list[:10]]
+        await context.bot.send_media_group(
+            chat_id=ADMIN_CHAT_ID,
+            media=media
         )
     else:
         await context.bot.send_message(
             ADMIN_CHAT_ID,
-            f"🧾 Чеки: {update.message.text}"
+            "🧾 Чеки не были отправлены"
         )
 
-    # Чистим список фото для этого пользователя
-    pending_photos.pop(user.id, None)
+    pending_photos.pop(user_id, None)
 
     await update.message.reply_text(
-        "✅ Спасибо! Справка будет оформлена в течение 30 дней."
+        "✅ Фото получены! Справка будет оформлена в течение 30 дней."
     )
+
     return ConversationHandler.END
+
+
+# ======== ТЕКСТ ========
+async def receipts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+
+    if "чеков нет" in text:
+        user = update.effective_user
+        data = context.user_data
+
+        msg = (
+            "📄 *Новая заявка на справку*\n\n"
+            f"👤 ФИО: {data['fio']}\n"
+            f"🎂 Дата рождения: {data['birthdate']}\n"
+            f"🧾 ИНН: {data['inn']}\n"
+            f"📦 Получение: {data['delivery']}\n"
+            f"📧 Email: {data.get('email','—')}\n"
+            f"🧾 Чеки: {update.message.text}\n"
+            f"👤 User ID: {user.id}\n"
+            f"🕒 Время: {datetime.now():%Y-%m-%d %H:%M:%S}"
+        )
+
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=msg,
+            parse_mode="Markdown",
+        )
+
+        await update.message.reply_text(
+            "✅ Спасибо! Справка будет оформлена в течение 30 дней."
+        )
+        return ConversationHandler.END
+
+    await update.message.reply_text("Пришлите фото чеков:")
+    return RECEIPTS
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,16 +215,20 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-                FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
-                BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
-                INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
-                DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
-                EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
-                RECEIPTS: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, receipts),   
-                    MessageHandler(filters.PHOTO, handle_photo),                 
-                ],
-            },
+            FIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, fio)],
+            BIRTHDATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, birthdate)],
+            INN: [MessageHandler(filters.TEXT & ~filters.COMMAND, inn)],
+            DELIVERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery)],
+            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email)],
+            RECEIPTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receipts),
+                MessageHandler(filters.PHOTO, handle_photo),
+            ],
+            MORE_PHOTOS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, more_photos),
+                MessageHandler(filters.PHOTO, handle_photo),
+            ],
+        },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
